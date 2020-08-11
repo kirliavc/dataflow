@@ -3,8 +3,10 @@ package systolic
 import chisel3._
 import chisel3.util._
 import scala.math.log10
+import chisel3.stage.ChiselStage
 //import chisel3.Driver
 import chisel3.iotesters.{PeekPokeTester, Driver}
+import java.io.PrintWriter
 class AddTree(len: Int, width: Int) extends Module{
   def treedep(k: Int): Int = (log10(k-1)/log10(2)).toInt+1
   val io = IO(new Bundle{
@@ -60,7 +62,9 @@ class DirectInput(width: Int) extends Module{
     val out = Output(Valid(UInt(width.W)))
     val to_pe = Output(Valid(UInt(width.W)))
   })
-  io.to_pe := io.in
+  val reg = RegInit(0.U.asTypeOf(Valid(UInt(width.W))))
+  reg := io.in
+  io.to_pe := reg
   io.out := io.in
 }
 class DirectOutput(width: Int) extends Module{
@@ -217,148 +221,6 @@ class PE(m: Int, n: Int, width: Int, dataflowA: TensorDataflow, dataflowB: Tenso
     }
   }
 }
-// class DummyPE(m: Int, n: Int, width: Int, dataflowA: TensorDataflow, dataflowB: TensorDataflow, dataflowC: TensorDataflow) extends Module{
-//   val a_stat = false
-//   val b_stat = false
-//   val c_stat = true
-//   val io = IO(new Bundle {
-//     val in_a = Input(Valid(UInt((m*width).W)))
-//     val in_b = Input(Valid(UInt((n*width).W)))
-//     val in_c = Input(Valid(UInt((m*n*width).W)))
-//     val out_c = Output(Valid(UInt((m*n*width).W)))
-//     val out_a = Output(Valid(UInt((m*width).W)))
-//     val out_b = Output(Valid(UInt((n*width).W)))
-//     val a_sig_in2trans = if(a_stat)Some(Input(Bool()))else None
-//     val b_sig_in2trans = if(b_stat)Some(Input(Bool()))else None
-//     val c_sig_in2trans = if(c_stat)Some(Input(Bool()))else None
-//     val a_sig_stat2trans = if(a_stat)Some(Input(Bool()))else None
-//     val b_sig_stat2trans = if(b_stat)Some(Input(Bool()))else None
-//     val c_sig_stat2trans = if(c_stat)Some(Input(Bool()))else None
-//     val valid = Input(Bool())
-//   })
-//   io.out_c := io.in_c
-//   io.out_a := io.in_a
-//   io.out_b := io.in_b
-//   when(io.valid){
-//     io.out_c.bits := io.in_c.bits + io.in_a.bits * io.in_b.bits
-//   }
-// }
-class DummyPE(m: Int, n: Int, width: Int, dataflowA: TensorDataflow, dataflowB: TensorDataflow, dataflowC: TensorDataflow) extends Module{
-  val a_stat = false
-  val b_stat = false
-  val c_stat = true
-  val io = IO(new Bundle {
-    val in_a = Input(Valid(UInt((m*width).W)))
-    val in_b = Input(Valid(UInt((n*width).W)))
-    val in_c = Input(Valid(UInt((m*n*width).W)))
-    val out_c = Output(Valid(UInt((m*n*width).W)))
-    val out_a = Output(Valid(UInt((m*width).W)))
-    val out_b = Output(Valid(UInt((n*width).W)))
-    val a_sig_in2trans = if(a_stat)Some(Input(Bool()))else None
-    val b_sig_in2trans = if(b_stat)Some(Input(Bool()))else None
-    val c_sig_in2trans = if(c_stat)Some(Input(Bool()))else None
-    val a_sig_stat2trans = if(a_stat)Some(Input(Bool()))else None
-    val b_sig_stat2trans = if(b_stat)Some(Input(Bool()))else None
-    val c_sig_stat2trans = if(c_stat)Some(Input(Bool()))else None
-    val valid = Input(Bool())
-  })
-  val pe = Module(new ComputeCell(m, n, width)).io
-  pe.valid := io.valid
-  val v = Module(new SystolicInput(width)).io
-  v.in := io.in_a
-  io.out_a := v.out
-  pe.in_a := v.to_pe
-  val y = Module(new SystolicInput(width)).io
-  y.in := io.in_b
-  io.out_b := y.out
-  pe.in_b := y.to_pe
-  val q = Module(new StationaryOutput(width)).io
-  q.in := io.in_c
-  io.out_c := q.out
-  pe.in_c := q.to_pe
-  q.sig_in2trans := io.c_sig_in2trans.get
-  q.sig_stat2trans := io.c_sig_stat2trans.get
-  q.from_pe:=pe.out_c
-}
-// class BlackPE(m: Int, n: Int, width: Int, dataflowA: TensorDataflow, dataflowB: TensorDataflow, dataflowC: TensorDataflow) extends BlackBox{
-//   //print(m+" "+n+" "+width+" "+dataflowA+" "+dataflowB+" "+dataflowC)
-//   val a_stat = (dataflowA == StationaryInputDF || dataflowA == StationaryOutputDF)
-//   val b_stat = (dataflowB == StationaryInputDF || dataflowB == StationaryOutputDF)
-//   val c_stat = (dataflowC == StationaryInputDF || dataflowC == StationaryOutputDF)
-//   val io = IO(new Bundle {
-//     val in_a = Input(Valid(UInt((m*width).W)))
-//     val in_b = Input(Valid(UInt((n*width).W)))
-//     val in_c = Input(Valid(UInt((m*n*width).W)))
-//     val out_c = Output(Valid(UInt((m*n*width).W)))
-//     val out_a = Output(Valid(UInt((m*width).W)))
-//     val out_b = Output(Valid(UInt((n*width).W)))
-//     val a_sig_in2trans = if(a_stat)Some(Input(Bool()))else None
-//     val b_sig_in2trans = if(b_stat)Some(Input(Bool()))else None
-//     val c_sig_in2trans = if(c_stat)Some(Input(Bool()))else None
-//     val a_sig_stat2trans = if(a_stat)Some(Input(Bool()))else None
-//     val b_sig_stat2trans = if(b_stat)Some(Input(Bool()))else None
-//     val c_sig_stat2trans = if(c_stat)Some(Input(Bool()))else None
-//     val valid = Input(Bool())
-//   })
-  
-// }
-class PEArrayGen() extends Module{
-  val io = IO(new Bundle{
-    //val inst = DeqIO(new RoCCInstruction()) //指令输入
-    val in_a = Input(Valid(Vec(16, UInt((16).W)))) //数据输入
-    val in_b = Input(Valid(Vec(16, UInt((16).W)))) 
-    val out_c = Output(Valid(Vec(16, UInt((16).W))))
-    val work = Input(Bool())
-  })
-  val pes = for(i <- 0 until 16) yield{
-    for(j <- 0 until 16) yield{
-      Module(new DummyPE(1, 1, 16,SystolicInputDF, SystolicInputDF, StationaryOutputDF)).io
-    }
-  }
-  val reg_work = RegInit(VecInit(Seq.fill(16)(false.B)))
-  reg_work(0) := io.work
-  for(i <- 1 until 16){
-    reg_work(i) := reg_work(i-1)
-  }
-  // for(i <- 0 until 16){
-  //   for(j <- 0 until 16){
-  //     pes(i)(j).in_a.bits := io.in_a.bits(i)
-  //     pes(i)(j).in_a.valid := reg_work(i)
-  //   }
-  // }
-  for(j <- 0 until 16){
-    pes(0)(j).in_a.bits := io.in_a.bits(j)
-    pes(0)(j).in_a.valid := reg_work(j)
-    for(i <- 1 until 16){
-      pes(i)(j).in_a <> pes(i-1)(j).out_a
-    }
-    
-  }
-  for(i <- 0 until 16){
-    pes(i)(0).in_b.bits := io.in_b.bits(i)
-    pes(i)(0).in_b.valid := reg_work(i)
-    for(j <- 1 until 16){
-      pes(i)(j).in_b <> pes(i)(j-1).out_b
-    }
-    
-  }
-  for(j <- 0 until 16){
-    for(i <- 1 until 16){
-      pes(i)(j).in_c <> pes(i-1)(j).out_c
-    }
-    pes(0)(j).in_c.bits := 0.U
-    pes(0)(j).in_c.valid := true.B
-    io.out_c.bits(j) := pes(15)(j).out_c.bits
-  }
-  for(i <- 0 until 16){
-    for(j <- 0 until 16){
-      pes(i)(j).valid := true.B
-      pes(i)(j).c_sig_in2trans.get := true.B
-      pes(i)(j).c_sig_stat2trans.get := true.B
-    }
-  }
-  io.out_c.valid := true.B
-}
 class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[Int], vecC: Array[Int]) extends Module{
   def calc_len(x: Int, y: Int): Int = {
     if(y==0)
@@ -373,9 +235,9 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
   val c_io_len = calc_len(vecC(0), vecC(1))
   val io = IO(new Bundle{
     //val inst = DeqIO(new RoCCInstruction()) //指令输入
-    val in_a = DeqIO(Vec(a_io_len, UInt((width).W))) //数据输入
-    val in_b = DeqIO(Vec(b_io_len, UInt((width).W)))
-    val out_c = Output(Valid(Vec(c_io_len, UInt((width).W))))
+    val in_a = Input(Vec(a_io_len, Valid(UInt((width).W)))) //数据输入
+    val in_b = Input(Vec(b_io_len, Valid(UInt((width).W))))
+    val out_c = Output(Vec(c_io_len, Valid(UInt((width).W))))
     val work = Input(Bool())
     val stage_cycle = Input(UInt(9.W))
   })
@@ -388,9 +250,6 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
     val xy_diff = y(0)!=0||y(1)!=0
     val t_diff = y(2)!=0
     var ret = StationaryInputDF
-    print(xy_diff)
-    print(t_diff)
-    println()
     if(!xy_diff && t_diff){
       if(z==0){
         ret = StationaryInputDF
@@ -416,9 +275,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
   val dataflowA = dfs(0)
   val dataflowB = dfs(1)
   val dataflowC = dfs(2)
-  print("DFS:"+dataflowA+" "+dataflowB+" "+dataflowC)
-  io.in_a.ready := true.B
-  io.in_b.ready := true.B
+  //print("DFS:"+dataflowA+" "+dataflowB+" "+dataflowC)
   val a_stat = (dataflowA == StationaryInputDF || dataflowA == StationaryOutputDF)
   val b_stat = (dataflowB == StationaryInputDF || dataflowB == StationaryOutputDF)
   val c_stat = (dataflowC == StationaryInputDF || dataflowC == StationaryOutputDF)
@@ -441,21 +298,13 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
       cur_cycle(i)(j) := cur_cycle(i)(j-1)
     }
   }
-  for(j <- 0 until pe_w){
-    for(i <- 1 until pe_h){
-      pes(i)(j).in_a <> pes(i-1)(j).out_a
-    }
-    pes(0)(j).in_a.bits := io.in_a.bits(j)
-    pes(0)(j).in_a.valid := reg_work(j)
-  }
   // stat input
   if(vecA(0)==0&&vecA(1)==0){
     for(i <- 0 until pe_h){
       for(j <- 1 until pe_w){
         pes(i)(j).out_a <> pes(i)(j-1).in_a
       }
-      pes(i)(pe_w-1).in_a.bits := io.in_a.bits(i)
-      pes(i)(pe_w-1).in_a.valid := reg_work(i)
+      pes(i)(pe_w-1).in_a := io.in_a(i)
     }
   }
   if(vecA(0)==0&&vecA(1)==1){
@@ -463,8 +312,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
       for(i <- 1 until pe_h){
         pes(i)(j).in_a <> pes(i-1)(j).out_a
       }
-      pes(0)(j).in_a.bits := io.in_a.bits(j)
-      pes(0)(j).in_a.valid := reg_work(j)
+      pes(0)(j).in_a := io.in_a(j)
     }
   }
   if(vecA(0)==1&&vecA(1)==0){
@@ -472,8 +320,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
       for(j <- 1 until pe_w){
         pes(i)(j).in_a <> pes(i)(j-1).out_a
       }
-      pes(i)(0).in_a.bits := io.in_a.bits(i)
-      pes(i)(0).in_a.valid := reg_work(i)
+      pes(i)(0).in_a := io.in_a(i)
     }
   }
   if(vecA(0)==1&&vecA(1)==1){
@@ -483,8 +330,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
         if(i-1>=0&&j-1>=0){
           pes(i)(j).in_a <> pes(i-1)(j-1).out_a
         }else{
-          pes(i)(j).in_a.bits := io.in_a.bits(in_id)
-          pes(i)(j).in_a.valid := true.B
+          pes(i)(j).in_a := io.in_a(in_id)
           in_id = in_id + 1
         }
         
@@ -496,8 +342,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
       for(j <- 1 until pe_w){
         pes(i)(j).out_b <> pes(i)(j-1).in_b
       }
-      pes(i)(pe_w-1).in_b.bits := io.in_b.bits(i)
-      pes(i)(pe_w-1).in_b.valid := reg_work(i)
+      pes(i)(pe_w-1).in_b := io.in_b(i)
     }
   }
   if(vecB(0)==0&&vecB(1)==1){
@@ -505,8 +350,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
       for(i <- 1 until pe_h){
         pes(i)(j).in_b <> pes(i-1)(j).out_b
       }
-      pes(0)(j).in_b.bits := io.in_b.bits(j)
-      pes(0)(j).in_b.valid := reg_work(j)
+      pes(0)(j).in_b := io.in_b(j)
     }
   }
   if(vecB(0)==1&&vecB(1)==0){
@@ -514,8 +358,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
       for(j <- 1 until pe_w){
         pes(i)(j).in_b <> pes(i)(j-1).out_b
       }
-      pes(i)(0).in_b.bits := io.in_b.bits(i)
-      pes(i)(0).in_b.valid := reg_work(i)
+      pes(i)(0).in_b := io.in_b(i)
     }
   }
   if(vecB(0)==1&&vecB(1)==1){
@@ -525,8 +368,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
         if(i-1>=0&&j-1>=0){
           pes(i)(j).in_b <> pes(i-1)(j-1).out_b
         }else{
-          pes(i)(j).in_b.bits := io.in_b.bits(in_id)
-          pes(i)(j).in_b.valid := io.in_b.valid
+          pes(i)(j).in_b := io.in_b(in_id)
           in_id = in_id + 1
         }
       }
@@ -540,18 +382,18 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
       }
       pes(0)(j).in_c.bits := 0.U
       pes(0)(j).in_c.valid := true.B
-      io.out_c.bits(j) := pes(pe_h-1)(j).out_c.bits
+      io.out_c(j) := pes(pe_h-1)(j).out_c
     }
   }
   //systolic, horizontal
   if(vecC(0)==1&&vecC(1)==0&&vecC(2)==1){
-    for(i <- 1 until pe_h){
-      for(j <- 0 until pe_w){
-        pes(i)(j).in_c <> pes(i-1)(j).out_c
+    for(i <- 0 until pe_h){
+      for(j <- 1 until pe_w){
+        pes(i)(j).in_c <> pes(i)(j-1).out_c
       }
       pes(i)(0).in_c.bits := 0.U
       pes(i)(0).in_c.valid := true.B
-      io.out_c.bits(i) := pes(i)(pe_w-1).out_c.bits
+      io.out_c(i) := pes(i)(pe_w-1).out_c
     }
   }
   // 对角线，systolic
@@ -566,7 +408,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
           pes(i)(j).in_c.valid := false.B
         }
         if(i+1>=pe_h || j+1 >= pe_w){
-          io.out_c.bits(out_id) := pes(i)(j).out_c.bits
+          io.out_c(out_id) := pes(i)(j).out_c
         }
       }
     }
@@ -581,7 +423,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
         pes(j)(i).in_c.valid := false.B
         tree.io.in.bits(j) := pes(j)(i).out_c.bits
       }
-      io.out_c.bits(i) := tree.io.out.bits
+      io.out_c(i) := tree.io.out
     }
   }
   if(vecC(0)==1&&vecC(1)==0&&vecC(2)==0){
@@ -593,7 +435,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
         pes(i)(j).in_c.valid := false.B
         tree.io.in.bits(j) := pes(i)(j).out_c.bits
       }
-      io.out_c.bits(i) := tree.io.out.bits
+      io.out_c(i) := tree.io.out
     }
   }
   for(i <- 0 until pe_h){
@@ -613,7 +455,6 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
       }
     }
   }
-  io.out_c.valid := true.B
 }
 class PEArray2 extends PEArray(16, 16, 16, Array(1, 0, 1), Array(1, 1, 0), Array(1, 0, 0)){
 }
@@ -627,15 +468,58 @@ class PEArray6 extends PEArray(16, 16, 16, Array(1, 0, 1), Array(0, 1, 1), Array
 }
 class PEArray7 extends PEArray(16, 16, 16, Array(0, 0, 1), Array(1, 1, 1), Array(0, 1, 0)){
 }
+object TestMat{
+  import scala.collection.mutable.Set
+  
+  def test(mat: Array[Array[Int]]):Boolean={
+    var ret = true
+    if(mat(2)(0)==1&&mat(2)(1)==1&&mat(2)(2)==0){
+      ret = false
+    }
+    val s = Set[(Int,Int,Int)]()
+    for (i <- 0 until 3){
+      for (j <- 0 until 3){
+        for (k <- 0 until 3){
+          val x = i * mat(0)(0)+j*mat(0)(1)+k*mat(0)(2)
+          val y = i * mat(1)(0)+j*mat(1)(1)+k*mat(1)(2)
+          val z = i * mat(2)(0)+j*mat(2)(1)+k*mat(2)(2)
+          if(s.contains((x,y,z))){
+            ret=false
+          }
+          s.add((x,y,z))
+        }
+      }
+    }
+    ret
+  }
+}
 object Test extends App {
   //chisel3.Driver.execute(args, () => new PE(1, 1, 16, SystolicInputDF, SystolicInputDF, StationaryOutputDF))
   //chisel3.Driver.execute(args, () => new PEArrayWS(16, 16, 16, Array(1, 0, 1), Array(0, 0, 1), Array(0, 1, 1)) )
-  chisel3.Driver.execute(args, () => new PEArray2() )
-  chisel3.Driver.execute(args, () => new PEArray3() )
-  chisel3.Driver.execute(args, () => new PEArray4() )
-  chisel3.Driver.execute(args, () => new PEArray5() )
-  chisel3.Driver.execute(args, () => new PEArray6() )
-  chisel3.Driver.execute(args, () => new PEArray7() )
+  var dfid = 100
+  var mat = Array(Array(0,0,0),Array(0,0,0),Array(0,0,0))
+  for(m <- 329 until 512){
+    var g = m
+    for(i <- 0 until 3){
+      for(j <- 0 until 3){
+        mat(i)(j)=g%2
+        g =g/2
+      }
+    }
+    if(TestMat.test(mat)){
+      println(m,dfid,mat(0).mkString(","),mat(1).mkString(","),mat(2).mkString(","))
+      val str = chisel3.Driver.emitVerilog(new PEArray(16,16,16,mat(0),mat(1),mat(2)))
+      new PrintWriter("PEArray_"+dfid+".v") { write(str); close }
+      dfid=dfid+1
+    }
+  }
+  //val str = chisel3.Driver.emitVerilog(new PEArray2() )
+  //print(str)
+  // chisel3.Driver.execute(args, () => new PEArray3() )
+  // chisel3.Driver.execute(args, () => new PEArray4() )
+  // chisel3.Driver.execute(args, () => new PEArray5() )
+  // chisel3.Driver.execute(args, () => new PEArray6() )
+  // chisel3.Driver.execute(args, () => new PEArray7() )
   //chisel3.Driver.execute(args, () => new PEArrayGen() )
 }
 // class PEArray(pe_w: Int, pe_h: Int, in_slot_num: Int, ker_slot_num: Int, cycle_read_kernel: Int, cycle_read_input: Int, cycle_out_res: Int, max_ks: Int, max_w: Int, batch: Int, width: Int) extends Module{
