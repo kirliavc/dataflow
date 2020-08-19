@@ -110,14 +110,16 @@ class StationaryInput(width: Int) extends Module{
   })
   val trans = RegInit(0.U.asTypeOf(Valid(UInt(width.W))))
   val stat = RegInit(0.U.asTypeOf(Valid(UInt(width.W))))
-  val input_cycle = RegInit(0.U(10.W))
-  val in_valid = RegInit(false.B)
+  val reg_in2trans = RegInit(false.B)
+  val reg_stat2trans = RegInit(false.B)
+  reg_in2trans := io.sig_in2trans
+  reg_stat2trans := io.sig_stat2trans
   io.out := trans
   io.to_pe.bits := stat.bits
-  when(io.sig_in2trans){
+  when(reg_in2trans){
     trans := io.in
   }
-  when(io.sig_stat2trans){
+  when(reg_stat2trans){
     stat := trans
   }
   io.to_pe.valid := stat.valid
@@ -134,17 +136,20 @@ class StationaryOutput(width: Int) extends Module{
   val trans = RegInit(0.U.asTypeOf(Valid(UInt(width.W))))
   //val stat_C = Module(new RegIO(m*n,width))
   val stat = RegInit(0.U.asTypeOf(Valid(UInt(width.W))))
+  val reg_in2trans = RegInit(false.B)
+  val reg_stat2trans = RegInit(false.B)
+  reg_in2trans := io.sig_in2trans
+  reg_stat2trans := io.sig_stat2trans
   //printf("%d %d\n",stat_C, trans_C)
   io.out:=trans
   stat := io.from_pe
-  when(io.sig_stat2trans){
+  when(reg_stat2trans){
     trans := stat
-  }
-  when(io.sig_in2trans){
+  }.elsewhen(reg_in2trans){
     trans := io.in
   }
-  io.to_pe.valid := stat.valid
-  io.to_pe.bits := Mux(io.sig_stat2trans, 0.U, stat.bits)
+  io.to_pe.valid := true.B
+  io.to_pe.bits := Mux(reg_stat2trans, 0.U, stat.bits)
 }
 object TensorDataflow extends Enumeration{
   type TensorDataflow = Value//这里仅仅是为了将Enumration.Value的类型暴露出来给外界使用而已
@@ -169,64 +174,83 @@ class PE(m: Int, n: Int, width: Int, dataflowA: TensorDataflow, dataflowB: Tenso
     val a_sig_stat2trans = if(a_stat)Some(Input(Bool()))else None
     val b_sig_stat2trans = if(b_stat)Some(Input(Bool()))else None
     val c_sig_stat2trans = if(c_stat)Some(Input(Bool()))else None
-    val valid = Input(Bool())
   })
-  val pe = Module(new ComputeCell(m, n, width)).io
-  pe.valid := io.valid
-  List((io.in_a, io.out_a, pe.in_a, null,io.a_sig_in2trans, io.a_sig_stat2trans, dataflowA), (io.in_b, io.out_b, pe.in_b, null, io.b_sig_in2trans, io.b_sig_stat2trans, dataflowB), ( io.in_c, io.out_c, pe.in_c, pe.out_c, io.c_sig_in2trans, io.c_sig_stat2trans, dataflowC)).map{ case (in, out, pein, peout, sig1, sig2, df)=>
+  val pe = Module(new ComputeCellF(m, n, width)).io
+  List((io.in_a, io.out_a, pe.in_a, null,io.a_sig_in2trans, io.a_sig_stat2trans, dataflowA, m), (io.in_b, io.out_b, pe.in_b, null, io.b_sig_in2trans, io.b_sig_stat2trans, dataflowB, n), ( io.in_c, io.out_c, pe.in_c, pe.out_c, io.c_sig_in2trans, io.c_sig_stat2trans, dataflowC, m*n)).map{ case (in, out, pein, peout, sig1, sig2, df, vect)=>
     df match{
       case SystolicInputDF =>{
-        val m = Module(new SystolicInput(width)).io
+        val m = Module(new SystolicInput(vect*width)).io
         m.in := in
         out := m.out
-        pein := m.to_pe
+        pein := m.to_pe.bits
       }
       case SystolicOutputDF =>{
-        val m = Module(new SystolicOutput(width)).io
+        val m = Module(new SystolicOutput(vect*width)).io
         m.in := in
         out := m.out
-        pein := m.to_pe
-        m.from_pe := peout
+        pein := m.to_pe.bits
+        m.from_pe.bits := peout
+        m.from_pe.valid := m.to_pe.valid
       }
       case StationaryInputDF =>{
-        val m = Module(new StationaryInput(width)).io
+        val m = Module(new StationaryInput(vect*width)).io
         m.in := in
         out := m.out
-        pein := m.to_pe
+        pein := m.to_pe.bits
         m.sig_in2trans := sig1.get
         m.sig_stat2trans := sig2.get
       }
       case StationaryOutputDF =>{
-        val m = Module(new StationaryOutput(width)).io
+        val m = Module(new StationaryOutput(vect*width)).io
         m.in := in
         out := m.out
-        pein := m.to_pe
+        pein := m.to_pe.bits
         m.sig_in2trans := sig1.get
         m.sig_stat2trans := sig2.get
-        m.from_pe:=peout
+        m.from_pe.bits := peout
+        m.from_pe.valid := m.to_pe.valid
       }
       case DirectInputDF =>{
-        val m = Module(new DirectInput(width)).io
+        val m = Module(new DirectInput(vect*width)).io
         m.in := in
         out := m.out
-        pein := m.to_pe
+        pein := m.to_pe.bits
       }
       case DirectOutputDF =>{
-        val m = Module(new DirectOutput(width)).io
+        val m = Module(new DirectOutput(vect*width)).io
         m.in := in
         out := m.out
-        pein := m.to_pe
-        m.from_pe := peout
+        pein := m.to_pe.bits
+        m.from_pe.bits := peout
+        m.from_pe.valid := m.to_pe.valid
       }
     }
   }
 }
-class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[Int], vecC: Array[Int]) extends Module{
+class OnChipMem(dep: Int, width: Int)extends Module{
+  def log2(k: Int): Int = (log10(k-1)/log10(2)).toInt+1
+  val addrwidth=log2(dep)
+  val io = IO(new Bundle{
+    val in_val = Input(Valid(UInt(width.W)))
+    val in_addr = Input(UInt(addrwidth.W))
+    val out_addr = Input(UInt(addrwidth.W))
+    val out_val = Output(Valid(UInt(width.W)))
+  })
+  val mem = SyncReadMem(dep, UInt(width.W))
+  val read_dt = RegInit(0.U(width.W))
+  when(io.in_val.valid){
+    mem.write( io.in_addr, io.in_val.bits)
+  }
+  read_dt := mem.read(io.out_addr)
+  io.out_val.valid := true.B
+  io.out_val.bits := read_dt
+}
+class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[Int], vecC: Array[Int], veca: Int, vecb: Int) extends Module{
   def calc_len(x: Int, y: Int): Int = {
-    if(y==0)
-      pe_h
-    else if(x==0&&y!=0)
+    if(x==0)
       pe_w
+    else if(y==0)
+      pe_h
     else
       pe_h + pe_w - 1
   }
@@ -235,17 +259,17 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
   val c_io_len = calc_len(vecC(0), vecC(1))
   val io = IO(new Bundle{
     //val inst = DeqIO(new RoCCInstruction()) //指令输入
-    val in_a = Input(Vec(a_io_len, Valid(UInt((width).W)))) //数据输入
-    val in_b = Input(Vec(b_io_len, Valid(UInt((width).W))))
-    val out_c = Output(Vec(c_io_len, Valid(UInt((width).W))))
+    val in_a = Input(Vec(a_io_len, Valid(UInt((veca*width).W)))) //数据输入
+    val in_b = Input(Vec(b_io_len, Valid(UInt((vecb*width).W))))
+    val out_c = Output(Vec(c_io_len, Valid(UInt((veca*vecb*width).W))))
     val work = Input(Bool())
     val stage_cycle = Input(UInt(9.W))
   })
-  val reg_work = RegInit(VecInit(Seq.fill(a_io_len + b_io_len)(false.B)))
-  reg_work(0) := io.work
-  for(i <- 1 until (a_io_len + b_io_len)){
-    reg_work(i) := reg_work(i-1)
-  }
+  //val reg_work = RegInit(VecInit(Seq.fill(a_io_len + b_io_len)(false.B)))
+  // reg_work(0) := io.work
+  // for(i <- 1 until (a_io_len + b_io_len)){
+  //   reg_work(i) := reg_work(i-1)
+  // }
   val dfs = List((vecA, 0), (vecB, 0), (vecC, 1)).map{case (y, z)=>
     val xy_diff = y(0)!=0||y(1)!=0
     val t_diff = y(2)!=0
@@ -282,7 +306,7 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
   
   val pes = for(i <- 0 until pe_h) yield{
     for(j <- 0 until pe_w) yield{
-      Module(new PE(1, 1, width,dataflowA, dataflowB, dataflowC)).io
+      Module(new PE(veca, vecb, width,dataflowA, dataflowB, dataflowC)).io
     }
   }
   val cur_cycle = for(i <- 0 until pe_h) yield{
@@ -290,12 +314,22 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
       RegInit(0.U(9.W))
     }
   }
-  cur_cycle(0)(0):= cur_cycle(0)(0)+io.work
+  val reg_work = for(i <- 0 until pe_h) yield{
+    for(j <- 0 until pe_w) yield{
+      RegInit(false.B)
+    }
+  }
+  cur_cycle(0)(0):= Mux(cur_cycle(0)(0)+io.work===io.stage_cycle, 0.U, cur_cycle(0)(0)+io.work)
+  reg_work(0)(0) := io.work
   for(i <- 0 until pe_h){
-    if(i!=0)
+    if(i!=0){
       cur_cycle(i)(0) := cur_cycle(i-1)(0)
+      reg_work(i)(0) := reg_work(i-1)(0)
+    }
+      
     for(j <- 1 until pe_w){
       cur_cycle(i)(j) := cur_cycle(i)(j-1)
+      reg_work(i)(j) := reg_work(i)(j-1)
     }
   }
   // stat input
@@ -440,33 +474,177 @@ class PEArray(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[In
   }
   for(i <- 0 until pe_h){
     for(j <- 0 until pe_w){
-      pes(i)(j).valid := reg_work(i+j)
       if(a_stat){
-        pes(i)(j).a_sig_in2trans.get := (cur_cycle(i)(j)>0.U&&cur_cycle(i)(j)<=i.asUInt&&reg_work(i+j))
-        pes(i)(j).a_sig_stat2trans.get := (cur_cycle(i)(j)===0.U&&reg_work(i+j))
+        pes(i)(j).a_sig_in2trans.get := (cur_cycle(i)(j)>0.U&&cur_cycle(i)(j)<=i.asUInt&&reg_work(i)(j))
+        pes(i)(j).a_sig_stat2trans.get := (cur_cycle(i)(j)===0.U&&reg_work(i)(j))
       }
       if(b_stat){
-        pes(i)(j).b_sig_in2trans.get := (cur_cycle(i)(j)>0.U&&cur_cycle(i)(j)<=i.asUInt&&reg_work(i+j))
-        pes(i)(j).b_sig_stat2trans.get := (cur_cycle(i)(j)===0.U&&reg_work(i+j))
+        pes(i)(j).b_sig_in2trans.get := (cur_cycle(i)(j)>=(io.stage_cycle - (i+1).asUInt)&&reg_work(i)(j))
+        pes(i)(j).b_sig_stat2trans.get := (cur_cycle(i)(j)===0.U&&reg_work(i)(j))
       }
       if(c_stat){
-        pes(i)(j).c_sig_in2trans.get := (cur_cycle(i)(j)>0.U&&cur_cycle(i)(j)<=i.asUInt&&reg_work(i+j))
-        pes(i)(j).c_sig_stat2trans.get := (cur_cycle(i)(j)===0.U&&reg_work(i+j))
+        pes(i)(j).c_sig_in2trans.get := (cur_cycle(i)(j)>0.U&&cur_cycle(i)(j)<=i.asUInt&&reg_work(i)(j))
+        pes(i)(j).c_sig_stat2trans.get := (cur_cycle(i)(j)===0.U&&reg_work(i)(j))
       }
     }
   }
+  // printf("%d\n",cur_cycle(0)(0))
+  // for(i <- 0 until pe_h){
+  //   for(j <- 0 until pe_w){
+  //     //printf("(%d %d %d %d)", pes(i)(j).out_c.bits, cur_cycle(i)(j), pes(i)(j).b_sig_in2trans.get, pes(i)(j).b_sig_stat2trans.get)
+  //     printf("(%d %d %d %d)", pes(i)(j).in_b.bits, pes(i)(j).out_b.bits, pes(i)(j).b_sig_in2trans.get, pes(i)(j).b_sig_stat2trans.get)
+  //   }
+  //   printf("\n")
+  // }
+  
+  // for(i <- 0 until 4){
+  //   printf("%d ",io.out_c(i).bits)
+  // }
+  // printf("\n")
 }
-class PEArray2 extends PEArray(16, 16, 16, Array(1, 0, 1), Array(1, 1, 0), Array(1, 0, 0)){
+class PEArrayMemF_WS(pe_h: Int, pe_w: Int, width: Int, vecA: Array[Int], vecB: Array[Int], vecC: Array[Int], veca: Int, vecb: Int) extends Module{
+  def calc_len(x: Int, y: Int): Int = {
+    if(x==0)
+      pe_w
+    else if(y==0)
+      pe_h
+    else
+      pe_h + pe_w - 1
+  }
+  val a_io_len = calc_len(vecA(0), vecA(1))
+  val b_io_len = calc_len(vecB(0), vecB(1))
+  val c_io_len = calc_len(vecC(0), vecC(1))
+  val io = IO(new Bundle{
+    //val inst = DeqIO(new RoCCInstruction()) //指令输入
+    val in_a = Input(Vec(a_io_len, Valid(UInt((veca*width).W)))) //数据输入
+    val in_b = Input(Vec(b_io_len, Valid(UInt((vecb*width).W))))
+    val out_c = Output(Vec(c_io_len, Valid(UInt((veca*vecb*width).W))))
+    val work = Input(Bool())
+    val stage_cycle = Input(UInt(9.W))
+  })
+
+  val wr_addr_a = RegInit(VecInit(Seq.fill(a_io_len)(0.U(10.W))))
+  val wr_addr_b = RegInit(VecInit(Seq.fill(b_io_len)(0.U(10.W))))
+  val wr_addr_c = RegInit(VecInit(Seq.fill(c_io_len)(0.U(10.W))))
+  val rd_addr_a = RegInit(VecInit(Seq.fill(a_io_len)(256.U(10.W))))
+  val rd_addr_b = RegInit(VecInit(Seq.fill(b_io_len)(256.U(10.W))))
+  val rd_addr_c = RegInit(VecInit(Seq.fill(c_io_len)(256.U(10.W))))
+  val pearray = Module(new PEArray(pe_h, pe_w, width, vecA, vecB, vecC, veca, vecb)).io
+  val mem_a = for(i <- 0 until a_io_len)yield{
+    Module(new OnChipMem(1024, veca*width)).io
+  }
+  val mem_b = for(i <- 0 until b_io_len)yield{
+    Module(new OnChipMem(1024, vecb*width)).io
+  }
+  val mem_c = for(i <- 0 until c_io_len)yield{
+    Module(new OnChipMem(1024, veca*vecb*width)).io
+  }
+  for(i <- 0 until a_io_len){
+    mem_a(i).in_val := io.in_a(i)
+    mem_a(i).in_addr := wr_addr_a(i)
+    mem_a(i).out_addr := rd_addr_a(i)
+    pearray.in_a(i) := mem_a(i).out_val
+  }
+  
+  for(i <- 0 until b_io_len){
+    mem_b(i).in_val := io.in_b(i)
+    mem_b(i).in_addr := wr_addr_b(i)
+    mem_b(i).out_addr := rd_addr_b(i)
+    pearray.in_b(i) := mem_b(i).out_val
+  }
+  for(i <- 0 until c_io_len){
+    mem_c(i).in_val := pearray.out_c(i)
+    mem_c(i).in_addr := wr_addr_c(i)
+    mem_c(i).out_addr := rd_addr_c(i)
+    io.out_c(i) := mem_c(i).out_val
+  }
+  
+
+  pearray.work := io.work
+  pearray.stage_cycle := io.stage_cycle 
+  for(i <- 0 until a_io_len){
+    if(vecA(2)==0){
+      rd_addr_a(i) := Mux(rd_addr_a(i)+io.work === 512.U, 0.U, rd_addr_a(i)+io.work)
+    }
+    else{
+      if(i!=0)
+        rd_addr_a(i) := rd_addr_a(i-1)
+      else
+        rd_addr_a(i) := Mux(rd_addr_a(i)+io.work === 512.U, 0.U, rd_addr_a(i)+io.work)
+    }
+  }
+  for(i <- 0 until b_io_len){
+    if(vecB(2)==0){
+      rd_addr_b(i) := Mux(rd_addr_b(i)+io.work === 512.U, 0.U, rd_addr_b(i)+io.work)
+    }
+    else{
+      if(i!=0)
+        rd_addr_b(i) := rd_addr_b(i-1)
+      else
+        rd_addr_b(i) := Mux(rd_addr_b(i)+io.work === 512.U, 0.U, rd_addr_b(i)+io.work)
+    }
+  }
+  for(i <- 0 until c_io_len){
+    if(vecC(2)==0){
+      rd_addr_c(i) := Mux(rd_addr_c(i)+io.work === 512.U, 0.U, rd_addr_c(i)+io.work)
+    }
+    else{
+      if(i!=0)
+        rd_addr_c(i) := rd_addr_c(i-1)
+      else
+        rd_addr_c(i) := Mux(rd_addr_c(i)+io.work === 512.U, 0.U, rd_addr_c(i)+io.work)
+    }
+  }
+
+  for(i <- 0 until a_io_len){
+    if(vecA(2)==0){
+      wr_addr_a(i) := Mux(wr_addr_a(i)+io.work === 512.U, 0.U, wr_addr_a(i)+io.work)
+    }
+    else{
+      if(i!=0)
+        wr_addr_a(i) := wr_addr_a(i-1)
+      else
+        wr_addr_a(i) := Mux(wr_addr_a(i)+io.work === 512.U, 0.U, wr_addr_a(i)+io.work)
+    }
+  }
+  for(i <- 0 until b_io_len){
+    if(vecB(2)==0){
+      wr_addr_b(i) := Mux(wr_addr_b(i)+io.work === 512.U, 0.U, wr_addr_b(i)+io.work)
+    }
+    else{
+      if(i!=0)
+        wr_addr_b(i) := wr_addr_b(i-1)
+      else
+        wr_addr_b(i) := Mux(wr_addr_b(i)+io.work === 512.U, 0.U, wr_addr_b(i)+io.work)
+    }
+  }
+  for(i <- 0 until c_io_len){
+    if(vecC(2)==0){
+      wr_addr_c(i) := Mux(wr_addr_c(i)+io.work === 512.U, 0.U, wr_addr_c(i)+io.work)
+    }
+    else{
+      if(i!=0)
+        wr_addr_c(i) := wr_addr_c(i-1)
+      else
+        wr_addr_c(i) := Mux(wr_addr_c(i)+io.work === 512.U, 0.U, wr_addr_c(i)+io.work)
+    }
+  }
 }
-class PEArray3 extends PEArray(16, 16, 16, Array(1, 1, 1), Array(0, 1, 0), Array(1, 0, 0)){
-}
-class PEArray4 extends PEArray(16, 16, 16, Array(1, 1, 1), Array(1, 1, 0), Array(1, 0, 0)){
-}
-class PEArray5 extends PEArray(16, 16, 16, Array(1, 1, 1), Array(0, 0, 1), Array(0, 1, 0)){
-}
-class PEArray6 extends PEArray(16, 16, 16, Array(1, 0, 1), Array(0, 1, 1), Array(0, 1, 0)){
-}
-class PEArray7 extends PEArray(16, 16, 16, Array(0, 0, 1), Array(1, 1, 1), Array(0, 1, 0)){
+class Test_Res1(c: PEArray) extends PeekPokeTester(c){
+  poke(c.io.work, 1)
+  poke(c.io.stage_cycle,12)
+  for(j <- 0 until 2){
+    for(i <- 0 until 64){
+      for(k <- 0 until 4){
+        poke(c.io.in_a(k).bits, 1)
+        poke(c.io.in_b(k).bits, i)
+        poke(c.io.in_a(k).valid, 1)
+        poke(c.io.in_b(k).valid, 1)
+      }
+      step(1)
+    }
+  }
+  // output: C(1, 4), C(2, 4), C(3, 4), C(4, 4), C(1, 3), C(2, 3), C(3, 3), C(4, 3)...
 }
 object TestMat{
   import scala.collection.mutable.Set
@@ -496,23 +674,26 @@ object TestMat{
 object Test extends App {
   //chisel3.Driver.execute(args, () => new PE(1, 1, 16, SystolicInputDF, SystolicInputDF, StationaryOutputDF))
   //chisel3.Driver.execute(args, () => new PEArrayWS(16, 16, 16, Array(1, 0, 1), Array(0, 0, 1), Array(0, 1, 1)) )
-  var dfid = 100
-  var mat = Array(Array(0,0,0),Array(0,0,0),Array(0,0,0))
-  for(m <- 329 until 512){
-    var g = m
-    for(i <- 0 until 3){
-      for(j <- 0 until 3){
-        mat(i)(j)=g%2
-        g =g/2
-      }
-    }
-    if(TestMat.test(mat)){
-      println(m,dfid,mat(0).mkString(","),mat(1).mkString(","),mat(2).mkString(","))
-      val str = chisel3.Driver.emitVerilog(new PEArray(16,16,16,mat(0),mat(1),mat(2)))
-      new PrintWriter("PEArray_"+dfid+".v") { write(str); close }
-      dfid=dfid+1
-    }
-  }
+  var dfid = 0
+  var mat = Array(Array(0,1,0),Array(1,0,0),Array(0,0,1))
+  
+  chisel3.Driver.execute(args, () => new PEArrayMemF_WS(16,10,32,mat(0),mat(1),mat(2),8, 1))
+  //Driver(() => new PEArray(4,4,16,mat(0),mat(1),mat(2),1,1))(c => new Test_Res1(c))
+  // for(m <- 0 until 512){
+  //   var g = m
+  //   for(i <- 0 until 3){
+  //     for(j <- 0 until 3){
+  //       mat(i)(j)=g%2
+  //       g =g/2
+  //     }
+  //   }
+  //   if(TestMat.test(mat)){
+  //     println(m,dfid,"A:",mat(0).mkString(","),"B:",mat(1).mkString(","),"C:",mat(2).mkString(","))
+  //     val str = chisel3.Driver.emitVerilog(new PEArray(16,16,16,mat(0),mat(1),mat(2),1,1))
+  //     new PrintWriter("PEArray_"+dfid+".v") { write(str); close }
+  //     dfid=dfid+1
+  //   }
+  // }
   //val str = chisel3.Driver.emitVerilog(new PEArray2() )
   //print(str)
   // chisel3.Driver.execute(args, () => new PEArray3() )
@@ -522,390 +703,3 @@ object Test extends App {
   // chisel3.Driver.execute(args, () => new PEArray7() )
   //chisel3.Driver.execute(args, () => new PEArrayGen() )
 }
-// class PEArray(pe_w: Int, pe_h: Int, in_slot_num: Int, ker_slot_num: Int, cycle_read_kernel: Int, cycle_read_input: Int, cycle_out_res: Int, max_ks: Int, max_w: Int, batch: Int, width: Int) extends Module{
-//   val io = IO(new Bundle{
-//     val inst = DeqIO(new RoCCInstruction()) //指令输入
-//     val a_in = DeqIO(Vec(cycle_read_kernel, UInt((width).W))) //数据输入
-//     val b_in = DeqIO(Vec(cycle_read_input, UInt((batch*width).W)))
-//     val c_out = Output(Valid(Vec(cycle_out_res, UInt((batch*width).W))))
-//   })
-//   val in_a_valid = RegInit(VecInit(Seq.fill(pe_h)(false.B)))
-//   val in_b_valid = RegInit(VecInit(Seq.fill(pe_w)(false.B)))
-//   val total_cycle = RegInit(1000.U(10.W))
-//   val exec_cycle = RegInit(0.U(10.W))
-//   val exec_fin = RegInit(VecInit(Seq.fill(pe_h+1)(false.B)))
-//   val ids = Module(new InstDispatcher()).io
-//   val a_input = Module(new WSSysIn_Kernel(pe_w, pe_h, ker_slot_num, max_ks * max_ks * pe_w, pe_w, width))
-//   val b_input = Module(new WSSysIn_Input(pe_w, in_slot_num, max_w, cycle_read_input, batch * width))
-//   val c_output = Module(new Update_Result(pe_h, in_slot_num, max_w, pe_h, batch*width))
-//   val pes = for(i <- 0 until pe_h) yield{
-//     for(j <- 0 until pe_w) yield{
-//       Module(new WSPE(j, pe_w, 1, batch, width)).io
-//     }
-//   }
-//   val part_sum = for(i <- 0 until pe_h) yield{
-//     RegInit(VecInit(Seq.fill(max_w)(0.U(width.W))))
-//   }
-//   // 控制conv_exec指令的完成，在最后一行PE开始输出结果之后
-//   exec_fin(0):= (exec_cycle===total_cycle-1.U)
-//   for(i <- 1 until pe_h){
-//     exec_fin(i) := exec_fin(i-1)
-//   }
-//   // 一开始的pe_w个cycle，输入filter到PE中，接下来的ks*ks*out_w个cycle用于计算。
-//   // printf("a.inputready=%d, b.inputready=%d\n",io.a_in.ready, io.b_in.ready)
-//   // printf("a.inputvalid=%d, b.inputvalid=%d\n",io.a_in.valid, io.b_in.valid)
-//   // printf("total cycle=%d, exec_cycle=%d, ks=%d, w=%d, conv_exec.valid=%d\n", total_cycle, exec_cycle, ids.config.ks, ids.config.out_w, ids.conv_exec.valid)
-//   printf("kernel buffer to PE\n")
-//   for(i <- 0 until cycle_read_kernel){
-//     printf("(%d, %d)",a_input.io.data_out.bits(i).bits,a_input.io.data_out.bits(i).valid)
-//   }
-//   printf("\n")
-//   printf("input buffer to PE\n")
-//   for(i <- 0 until cycle_read_input){
-//     printf("(%d, %d)",b_input.io.data_out.bits(i).bits,b_input.io.data_out.bits(i).valid)
-//   }
-//   // printf("PE to output buffer\n")
-//   // for(i <- 0 until cycle_read_input){
-//   //   printf("(%d, %d)",c_output.io.data_in(i).bits,c_output.io.data_in(i).valid)
-//   // }
-//   // printf("\n")
-//   total_cycle := ids.config.ks * ids.config.ks * ids.config.out_w + pe_w.asUInt + 1.U
-//   ids.inst <> io.inst
-
-
-//   a_input.io.in_inst <> ids.wr_filter
-//   a_input.io.out_inst.bits.id := ids.conv_exec.bits.filter_id
-//   a_input.io.out_inst.valid := ids.conv_exec.valid
-//   a_input.io.data_in.valid := io.a_in.valid
-//   for(i <- 0 until cycle_read_kernel){
-//     a_input.io.data_in.bits(i).bits := io.a_in.bits(i)
-//     a_input.io.data_in.bits(i).valid := io.a_in.valid
-//   }
-//   b_input.io.in_inst <> ids.wr_input
-//   b_input.io.out_inst.bits.id := ids.conv_exec.bits.input_id
-//   b_input.io.out_inst.valid := ids.conv_exec.valid
-//   b_input.io.data_in.valid := io.b_in.valid
-//   for(i <- 0 until cycle_read_input){
-//     b_input.io.data_in.bits(i).bits := io.b_in.bits(i)
-//     b_input.io.data_in.bits(i).valid := io.b_in.valid
-//   }
-//   c_output.io.in_inst.bits.id := ids.conv_exec.bits.output_id
-//   c_output.io.in_inst.valid := ids.conv_exec.valid
-//   c_output.io.out_inst <> ids.rd_output
-//   io.c_out.valid := c_output.io.data_out.valid
-//   ids.conv_exec.ready := exec_fin(pe_h-1) //最后一个cycle，conv指令结束，ready置为真，允许下一条指令进来
-//   io.a_in.ready := a_input.io.data_in.ready
-//   io.b_in.ready := b_input.io.data_in.ready
-//   // filter的输入：每out_w个cycle，前pe_w个cycle输入，共输入ks*ks次
-//   a_input.io.data_out.ready:=(exec_cycle%ids.config.out_w < pe_w.asUInt && exec_cycle < total_cycle - pe_w.asUInt)
-//   // input的输入：前pe_w个cycle不输入，之后一直输入
-//   b_input.io.data_out.ready:=(exec_cycle >= pe_w.asUInt)
-//   a_input.io.config:=ids.config
-//   b_input.io.config:=ids.config
-//   c_output.io.config:=ids.config
-//   a_input.io.data_in.valid:=io.a_in.valid
-//   b_input.io.data_in.valid:=io.b_in.valid
-//   io.c_out:=c_output.io.data_out
-
-//   //如果input buffer的输出指令和filter buffer的输出指令均有效，则视为开始计算
-//   //exec_cycle对应的是0号PE的cycle情况
-//   exec_cycle := (exec_cycle + ids.conv_exec.valid)%total_cycle
-
-  
-//   for(i <- 0 until pe_h){
-//     for(j <- 1 until pe_w){
-//       pes(i)(j).out_a <> pes(i)(j-1).in_a
-//       pes(i)(j).in_c <> pes(i)(j-1).out_c
-//       pes(i)(j).in_stage_cycle := pes(i)(j-1).out_stage_cycle
-//     }
-//   }
-//   for(i <- 1 until pe_h){
-//     for(j <- 0 until pe_w){
-//       pes(i)(j).in_b <> pes(i-1)(j).out_b
-//     }
-//   }
-//   for(i <- 0 until pe_h){
-//     for(j <- 1 until max_w){
-//       part_sum(i)(j) := part_sum(i)(j-1)
-//     }
-//     part_sum(i)(0) := pes(i)(pe_w-1).out_c.bits
-//     pes(i)(0).in_stage_cycle := ids.config.out_w
-//     pes(i)(0).in_c.bits := part_sum(i)(ids.config.out_w-1.U)
-//     pes(i)(0).in_c.valid := true.B
-//     pes(i)(pe_w-1).in_a.bits := a_input.io.data_out.bits(i).bits
-//     pes(i)(pe_w-1).in_a.valid := a_input.io.data_out.bits(i).valid
-    
-//     c_output.io.data_in(i).bits := part_sum(i)(pe_w-1)
-//     c_output.io.data_in(i).valid := pes(i)(pe_w-1).out_c.valid
-//   }
-//   for(i <- 0 until pe_w){
-//     pes(0)(i).in_b.bits := b_input.io.data_out.bits(i).bits
-//     pes(0)(i).in_b.valid := b_input.io.data_out.bits(i).valid
-//   }
-//   printf("Exec cycle:%d\n",exec_cycle)
-//   for(i <- 0 until pe_h){
-//     for(j <- 0 until pe_w){
-//       //printf("%d ",part_sum(i)(j))
-//       printf("(%d %d %d) ", pes(i)(j).out_a.bits, pes(i)(j).out_b.bits, pes(i)(j).out_c.bits)
-//       //printf("(a:%d, %d b:%d, %d c:%d, %d) ", pes(i)(j).out_a.bits, pes(i)(j).out_a.valid, pes(i)(j).out_b.bits,pes(i)(j).out_b.valid, pes(i)(j).out_c.bits, pes(i)(j).out_c.valid)
-//     }
-//     printf("\n")
-    
-//   }
-//   printf("\n")
-// }
-
-// class WSSystolic(pe_w: Int, pe_h: Int, in_slot_num: Int, ker_slot_num: Int, cycle_read_kernel: Int, cycle_read_input: Int, cycle_out_res: Int, max_ks: Int, max_w: Int, batch: Int, width: Int) extends Module{
-//   val io = IO(new Bundle{
-//     val inst = DeqIO(new RoCCInstruction()) //指令输入
-//     val a_in = DeqIO(Vec(cycle_read_kernel, UInt((width).W))) //数据输入
-//     val b_in = DeqIO(Vec(cycle_read_input, UInt((batch*width).W)))
-//     val c_out = Output(Valid(Vec(cycle_out_res, UInt((batch*width).W))))
-//   })
-//   // val io = IO(new Bundle{
-//   //   val a_in = Vec(8, Valid(UInt(8.W)))
-//   //   val b_in = Vec(8, Valid(UInt(8.W)))
-//   //   val c_out = Vec(8, Valid(UInt(8.W)))
-//   // })
-//   // stage cycle=24, cur cycle=8
-//   val in_a_valid = RegInit(VecInit(Seq.fill(8)(false.B)))
-//   val in_b_valid = RegInit(VecInit(Seq.fill(8)(false.B)))
-//   val exec_cycle = RegInit(0.U(10.W))
-//   val ids = Module(new InstDispatcher()).io
-//   val a_input = Module(new WSSysIn_Kernel(pe_w: pe_w, pe_h: pe_h, slot_num: ker_slot_num, slot_size: max_ks * max_ks * pe_w, cycle_read: Int, width: Int))
-//   val b_input = Module(new WSSysIn_Input(pe_num: pe_w, slot_num: in_slot_num, slot_size: max_w * batch, cycle_read: cycle_read_input, width: Int))
-//   val c_output = Module(new Update_Result(x, s, max_input_h, max_input_w/s, cycle_out_res, m*n*width))
-//   val b_wait_cycle = RegInit(0.U(10.W))
-//   when(ids.rd_input.ready && ids.rd_input.valid){
-//     b_wait_cycle := pe_w.asUInt - 1.U
-//   }.otherwise{
-//     b_wait_cycle := Mux(b_wait_cycle===0.U, 0.U, b_wait_cycle - ids.rd_input.valid)
-//   }
-//   val a_input_cycle = RegInit(0.U(10.W))
-//   when(ids.rd_filter.ready && ids.rd_filter.valid){
-//     a_input_cycle := 0.U
-//   }.otherwise{
-//     a_input_cycle := Mux(a_input_cycle + ids.rd_filter.valid===ids.config.out_w, 0.U, a_input_cycle + ids.rd_filter.valid)
-//   }
-//   a_input.io.in_inst <> ids.wr_filter
-//   a_input.io.out_inst <> ids.rd_filter
-//   b_input.io.in_inst <> ids.wr_input
-//   b_input.io.out_inst <> ids.rd_input
-//   c_output.io.in_inst <> ids.wr_output
-//   c_output.io.out_inst <> ids.rd_output
-//   io.a_in.ready := a_input.io.data_in.ready
-//   io.b_in.ready := b_input.io.data_in.ready
-//   a_input.io.data_out.ready:=(a_input_cycle < pe_w)
-//   b_input.io.data_out.ready:=(b_wait_cycle===0.U)
-//   a_input.io.config:=ids.config
-//   b_input.io.config:=ids.config
-//   c_output.io.config:=ids.config
-//   a_input.io.data_in.valid:=io.a_in.valid
-//   b_input.io.data_in.valid:=io.b_in.valid
-//   io.c_out:=c_output.io.data_out
-
-//   //如果input buffer的输出指令和filter buffer的输出指令均有效，则视为开始计算
-//   //exec_cycle对应的是0号PE的cycle情况
-//   exec_cycle := (exec_cycle + ids.rd_input.valid && ids.rd_filter.valid)%ids.config.out_w
-//   when(exec_cycle < input_){
-//     a_input.io.data_out.ready
-//   }.otherwise{
-//     in_a_valid(0) := 0.U
-//   }
-//   for(i <- 1 until 8){
-//     in_a_valid(i) := in_a_valid(i-1)
-//     in_b_valid(i) := in_b_valid(i-1)
-//   }
-//   val pes = for(i <- 0 until 8) yield{
-//     for(j <- 0 until 8) yield{
-//       Module(new WSPE(j, 16, 1, 1, 16)).io
-//     }
-//   }
-//   for(i <- 0 until 8){
-//     for(j <- 1 until 8){
-//       pes(i)(j).in_a <> pes(i)(j-1).out_a
-//       pes(i)(j).in_c <> pes(i)(j-1).out_c
-//       pes(i)(j).in_stage_cycle := pes(i)(j-1).out_stage_cycle
-//     }
-//   }
-//   for(i <- 1 until 8){
-//     for(j <- 0 until 8){
-//       pes(i)(j).in_b <> pes(i-1)(j).out_b
-//     }
-//   }
-//   for(i <- 0 until 8){
-//     pes(i)(0).in_stage_cycle := 24.U
-//     pes(i)(0).in_c.bits := 0.U
-//     pes(i)(0).in_c.valid := true.B
-//     pes(i)(0).in_a.bits := cur_data
-//     pes(i)(0).in_a.valid := in_a_valid(i)
-//   }
-//   for(i <- 0 until 8){
-//     pes(0)(i).in_b.bits := 1.U
-//     pes(0)(i).in_b.valid := in_b_valid(i)
-//   }
-//   for(i <- 0 until 8){
-//     for(j <- 0 until 8){
-//       printf("(%d %d %d) ", pes(i)(j).out_a.bits, pes(i)(j).out_b.bits, pes(i)(j).out_c.bits)
-//       //printf("(a:%d, %d b:%d, %d c:%d, %d) ", pes(i)(j).out_a.bits, pes(i)(j).out_a.valid, pes(i)(j).out_b.bits,pes(i)(j).out_b.valid, pes(i)(j).out_c.bits, pes(i)(j).out_c.valid)
-//     }
-//     printf("\n")
-    
-//   }
-//   printf("\n")
-// }
-
-// class WSPE_BitFusion(id: Int, dim: Int, m: Int, n: Int, width: Int) extends Module{
-//     val io = IO(new Bundle {
-//       val in_stage_cycle = Input(UInt(10.W))
-//       val out_stage_cycle = Output(UInt(10.W))
-//       val in_a = Input(Valid(UInt((m*width).W)))
-//       val in_b = Input(Valid(UInt((n*width).W)))
-//       val in_c = Input(Valid(UInt(128.W)))
-//       val out_c = Output(Valid(UInt(128.W)))
-//       val out_a = Output(Valid(UInt((m*width).W)))
-//       val out_b = Output(Valid(UInt((n*width).W)))
-//     })
-//     val stage_cycle = RegInit(1.U(10.W))  
-//     val reg_b = RegInit(0.U.asTypeOf(Valid(UInt((n*width).W))))
-//     val reg_c = RegInit(0.U.asTypeOf(Valid(UInt((128).W))))
-//     val pe = Module(new DynamicPE_WS()).io
-    
-
-//     val trans_a = RegInit(0.U.asTypeOf(Valid(UInt((m*width).W))))
-//     val stat_a = RegInit(0.U.asTypeOf(Valid(UInt((m*width).W))))
-//     val exec_cycle = RegInit(0.U(10.W))
-//     val input_cycle = RegInit(0.U(10.W))
-
-//     pe.ctrl := 4.U
-//     pe.sgn := 1.U
-//     pe.statC_in := io.in_c.bits
-//     reg_c.bits := pe.statC_out
-//     pe.in_row := stat_a.bits
-//     pe.in_column := Mux(reg_b.valid, reg_b.bits, 0.U)
-//     //val stat = Module(new StatIn(id, dim, m, n, width)).io
-//     stage_cycle := io.in_stage_cycle
-//     io.out_stage_cycle := stage_cycle
-
-//     exec_cycle:=Mux(exec_cycle+(io.in_b.valid)===stage_cycle, 0.U, exec_cycle+(io.in_b.valid))
-    
-
-//     // 对于input，照单全收，由整体的controller控制
-//     reg_b.bits := io.in_b.bits
-//     reg_b.valid := io.in_b.valid
-//     trans_a.bits := io.in_a.bits
-//     trans_a.valid := io.in_a.valid
-//     when(io.in_a.valid){
-//       input_cycle := Mux(input_cycle===(dim-1).asUInt,0.U, input_cycle+1.U)
-//     }
-
-//     when(exec_cycle===0.U){
-//       stat_a := trans_a
-//     }
-//     //io.out_a := stat.to_io
-//     // pe.in_a := stat_a.bits
-//     // when(reg_b.valid){
-//     //   pe.in_b := reg_b.bits
-//     // }.otherwise{
-//     //   pe.in_b := 0.U
-//     // }
-//     reg_c.valid := io.in_b.valid
-//     io.out_c.bits := reg_c.bits
-//     io.out_c.valid := reg_c.valid
-//     //pe.in_c := io.in_c.bits
-//     io.out_b.bits := reg_b.bits
-//     io.out_b.valid := reg_b.valid
-//     io.out_a.bits := trans_a.bits
-//     io.out_a.valid := trans_a.valid
-// }
-// class WSSystolic(s: Int, x: Int, max_input_w: Int, max_input_h: Int, max_c: Int, max_ks: Int, cycle_read_input: Int, cycle_read_kernel: Int, cycle_out_res: Int, m: Int, n: Int, width: Int) extends Module{
-//   val io = IO(new Bundle{
-//     val inst = DeqIO(new RoCCInstruction()) //指令输入
-//     //val config = Input(new ConvConfig())  //后续会合并到inst里
-//     val a_in = DeqIO(Vec(cycle_read_kernel, UInt((n*width).W))) //数据输入
-//     val b_in = DeqIO(Vec(cycle_read_input, UInt((m*width).W)))
-//     val c_out = Output(Valid(Vec(cycle_out_res, UInt((m*n*width).W))))
-//   })
-  
-//   //assert(s*x/t==1)
-  
-//   val ids = Module(new InstDispatcher()).io
-//   printf("config: %d %d %d %d\n",ids.config.c, ids.config.ks, ids.config.in_w, ids.config.in_h)
-//   val stage_cycle = RegInit(333333.U(20.W))
-//   stage_cycle := ids.config.in_w
-
-//   //ids.config := io.config
-//   val pes = for(i <- 0 until s) yield{
-//     for(j <- 0 until x) yield{
-//       Module(new WSPE(i, s, m, n, width))
-//     }
-//   }
-//   // printf("PE status\n")
-//   //   for(j <- 0 until x){
-//   //     printf("(%d, %d, %d, %d)",pes(0)(j).io.in_b.bits,pes(0)(j).io.in_b.valid, pes(0)(j).io.cur_dt, pes(0)(j).io.cur_cycle)
-//   //   }
-//   // printf("\n")
-//   val a_input = Module(new DFSysIn_Kernel(x, s, max_c*max_ks*max_ks, 3,cycle_read_kernel, n*width))
-//   val b_input = Module(new DFSysIn_Input(x, max_input_w, max_c, max_ks, cycle_read_input, m*width))
-//   val c_output = Module(new Update_Result(x, s, max_input_h, max_input_w/s, cycle_out_res, m*n*width))
-//   //val transC = Module(new DCStatOut(t, s, x, m*n*width))
-//   a_input.io.in_inst <> ids.wr_filter
-//   a_input.io.out_inst <> ids.rd_filter
-//   b_input.io.in_inst <> ids.wr_input
-//   b_input.io.out_inst <> ids.rd_input
-//   c_output.io.in_inst <> ids.wr_output
-//   c_output.io.out_inst <> ids.rd_output
-//   io.a_in.ready := a_input.io.data_in.ready
-//   io.b_in.ready := b_input.io.data_in.ready
-//   a_input.io.data_out.ready:=true.B
-//   b_input.io.data_out.ready:=true.B
-//   a_input.io.config:=ids.config
-//   b_input.io.config:=ids.config
-//   c_output.io.config:=ids.config
-//   a_input.io.data_in.valid:=io.a_in.valid
-//   b_input.io.data_in.valid:=io.b_in.valid
-//   io.c_out:=c_output.io.data_out
-//   for(i <- 0 until cycle_read_kernel){
-//     a_input.io.data_in.bits(i):=io.a_in.bits(i).asUInt
-//   }
-//   for(i <- 0 until cycle_read_input){
-//     b_input.io.data_in.bits(i):=io.b_in.bits(i).asUInt
-//   }
-//   for(i <- 0 until s){
-//     pes(i)(0).io.in_stage_cycle:=reduce_cycle
-//     pes(i)(0).io.in_a:=a_input.io.data_out.bits(i)
-//   }
-//   for(i<- 0 until s){
-//     for(j<- 1 until x){
-//       pes(i)(j).io.in_stage_cycle:=pes(i)(j-1).io.out_stage_cycle
-//       pes(i)(j).io.in_a:=pes(i)(j-1).io.out_a
-//     }
-//   }
-//   for(i <- 0 until x){
-//     pes(0)(i).io.in_b:=b_input.io.data_out.bits(i)
-//   }
-//   for(i<- 0 until x){
-//     for(j<- 1 until s){
-//       pes(j)(i).io.in_b:=pes(j-1)(i).io.out_b
-//     }
-//   }
-//   for(i <- 0 until x){
-//     pes(0)(i).io.in_c.bits:=0.U
-//     pes(0)(i).io.in_c.valid:=false.B
-//   }
-//   for(i <- 1 until s){
-//     for(j <- 0 until x){
-//       pes(i)(j).io.in_c:=pes(i-1)(j).io.out_c
-//     }
-//   }
-//   for(i <- 0 until x){
-//     c_output.io.data_in(i):=pes(s-1)(i).io.out_c
-//   }
-//   //   //io.c_out(i).valid:=pes(s-1)(i).io.res_out.valid
-//   // }
-//   // for(i <- 0 until s*x/t){
-//   //   io.c_out(i).valid:=transC.io.data_out.valid
-//   //   io.c_out(i).bits:=transC.io.data_out.bits(i)
-//   // }
-//   // transC.io.data_out.ready:=true.B
-// }

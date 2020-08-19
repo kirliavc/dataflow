@@ -89,39 +89,67 @@ class ComputeCellF(m: Int, n: Int, width: Int) extends Module {
 
 class ComputeCell(m: Int, n: Int, width: Int) extends Module {
     val io = IO(new Bundle {
-        val in_a = Input(Valid(UInt((m*width).W)))
-        val in_b = Input(Valid(UInt((n*width).W)))
-        val in_c = Input(Valid(UInt((m*n*width).W)))
-        val out_c = Output(Valid(UInt((m*n*width).W)))
-        val valid = Input(Bool())
+        val in_a = Input(UInt((m*width).W))
+        val in_b = Input(UInt((n*width).W))
+        val in_c = Input(UInt((m*n*width).W))
+        val out_c = Output(UInt((m*n*width).W))
     })
+    //printf("%d %d %d %d %d\n",io.in_a.bits, io.in_b.bits, io.in_c.bits, io.out_c.bits, io.in_c.valid)
     val vec_a = Wire(Vec(m, UInt(width.W)))
     val vec_b = Wire(Vec(n, UInt(width.W)))
     val vec_c_in = Wire(Vec(m*n, UInt(width.W)))
     val vec_c_out = Wire(Vec(m*n, UInt(width.W)))
     for(i <- 0 until m){
-      vec_a(i):=io.in_a.bits(i*width+width-1, i*width)
+      vec_a(i):=io.in_a(i*width+width-1, i*width)
     }
     for(i <- 0 until n){
-      vec_b(i):=io.in_b.bits(i*width+width-1, i*width)
+      vec_b(i):=io.in_b(i*width+width-1, i*width)
     }
     for(i <- 0 until m*n){
-      vec_c_in(i):=io.in_c.bits(i*width+width-1, i*width)
+      vec_c_in(i):=io.in_c(i*width+width-1, i*width)
     }
+    
     for(i <- 0 until m){
       for(j <- 0 until n){
-        vec_c_out(i*n+j):=vec_a(i)*vec_b(j)+vec_c_in(i*n+j)
+        vec_c_out(i*n+j):=vec_a(i)*vec_b(j)+vec_c_in(i*n+j)//Mux(io.in_a.valid && io.in_b.valid && io.in_c.valid,vec_a(i)*vec_b(j)+vec_c_in(i*n+j), 0.U)
       }
     }
-    when(io.valid){
-      io.out_c.bits := vec_c_out.asUInt
-      io.out_c.valid := io.in_a.valid && io.in_b.valid && io.in_c.valid
-    }.otherwise{
-      io.out_c.bits := 0.U
-      io.out_c.valid := false.B
-    }
+    io.out_c := vec_c_out.asUInt
     
     //printf("%x %x %x %x %x %x\n", io.in_b, vec_b(0), vec_b(1), vec_c_out(0), vec_c_out(1), io.out_c)
 }
 
 
+class ComputeCell_Mttkrp(m: Int, n: Int, width: Int) extends Module {
+    val io = IO(new Bundle {
+        val in_a = Input(UInt((m*width).W))
+        val in_b = Input(UInt((2*n*width).W))
+        val in_c = Input(UInt((m*n*width).W))
+        val out_c = Output(UInt((m*n*width).W))
+    })
+    //printf("%d %d %d %d %d\n",io.in_a.bits, io.in_b.bits, io.in_c.bits, io.out_c.bits, io.in_c.valid)
+    val vec_a = Wire(Vec(m, UInt(width.W)))
+    val vec_b = Wire(Vec(2*n, UInt(width.W)))
+    val vec_c_in = Wire(Vec(m*n, UInt(width.W)))
+    val vec_c_out = Wire(Vec(m*n, UInt(width.W)))
+    val atimeb = RegInit(VecInit(Seq.fill(m*n)(0.U(width.W))))
+    for(i <- 0 until m){
+      vec_a(i):=io.in_a(i*width+width-1, i*width)
+    }
+    for(i <- 0 until 2*n){
+      vec_b(i):=io.in_b(i*width+width-1, i*width)
+    }
+    for(i <- 0 until m*n){
+      vec_c_in(i):=io.in_c(i*width+width-1, i*width)
+    }
+    
+    for(i <- 0 until m){
+      for(j <- 0 until n){
+        atimeb(i*n+j) := vec_a(i) * vec_b(j)
+        vec_c_out(i*n+j):=atimeb(i*n+j)*vec_b(j+n)+vec_c_in(i*n+j)//Mux(io.in_a.valid && io.in_b.valid && io.in_c.valid,vec_a(i)*vec_b(j)+vec_c_in(i*n+j), 0.U)
+      }
+    }
+    io.out_c := vec_c_out.asUInt
+    
+    //printf("%x %x %x %x %x %x\n", io.in_b, vec_b(0), vec_b(1), vec_c_out(0), vec_c_out(1), io.out_c)
+}
